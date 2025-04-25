@@ -1,77 +1,64 @@
-import pandas as pd
 import os
-import math
+import sys
+import pandas as pd
+from pathlib import Path
+from tqdm.auto import tqdm
+from utils.helpers import get_project_root  # usa o bootstrap padrão
 
-# Função para salvar o DataFrame em arquivos Parquet de tamanho máximo de 25MB
-def save_parquet_in_chunks(df, base_filename, max_size_mb=25, compression='snappy'):
+def save_parquet_in_chunks(df, relative_path, max_size_mb=25, compression='snappy'):
     """
-    Salva um DataFrame em múltiplos arquivos Parquet de tamanho máximo especificado (em MB).
+    Divide a large DataFrame into multiple Parquet files, each with a size up to `max_size_mb`.
     
-    Parâmetros:
-    df (DataFrame): O DataFrame que será dividido e salvo.
-    base_filename (str): O nome base para os arquivos Parquet gerados.
-    max_size_mb (int ou float): O tamanho máximo de cada arquivo Parquet em MB (padrão é 25MB).
-    compression (str): O tipo de compressão a ser utilizado (pode ser 'snappy', 'gzip', 'brotli', 'lz4').
-
-    Retorna:
-    None
+    Args:
+        df (pd.DataFrame): The full DataFrame to split and save.
+        relative_path (str): Path relative to project root, e.g., "data/staging/cnes/tbEstabelecimento".
+        max_size_mb (int): Max size in MB for each Parquet file.
+        compression (str): Parquet compression type (e.g., 'snappy', 'brotli', 'gzip').
     """
-    
-    # Garantir que max_size_mb seja um número
-    max_size_mb = float(max_size_mb)
-    
-    # Criar uma pasta para a compressão, caso não exista
-    output_dir = os.path.join(base_filename, compression)
-    os.makedirs(output_dir, exist_ok=True)  # Cria a pasta se não existir
+    max_size_bytes = max_size_mb * 1024 * 1024
+    project_root = get_project_root()
+    base_path = project_root / relative_path
+    os.makedirs(base_path.parent, exist_ok=True)
 
-    # Inicializando o índice para a partição
-    partition_index = 0
-    start_index = 0
-    chunk_size = len(df)  # Tamanho do DataFrame inteiro
-    total_size = df.memory_usage(deep=True).sum() / (1024 * 1024)  # Tamanho em MB
+    partition_index = 1
+    start_idx = 0
+    n_rows = len(df)
 
-    # Salvar as divisões como arquivos Parquet
-    while start_index < chunk_size:
+    pbar = tqdm(total=n_rows, desc="Salvando arquivos Parquet", unit="linhas")
+
+    while start_idx < n_rows:
+        low = 1000
+        high = n_rows - start_idx
+        best_step = None
+
+        # Busca binária para encontrar o maior chunk possível <= max_size_bytes
+        while low <= high:
+            mid = (low + high) // 2
+            chunk_df = df.iloc[start_idx:start_idx + mid]
+            temp_path = base_path.parent / "__temp.parquet"
+            chunk_df.to_parquet(temp_path, compression=compression, index=False)
+            size = temp_path.stat().st_size
+            os.remove(temp_path)
+
+            if size <= max_size_bytes:
+                best_step = mid
+                low = mid + 1
+            else:
+                high = mid - 1
+
+        if best_step is None:
+            raise ValueError("No chunk could be created under the size limit. Try increasing compression or reducing columns.")
+
+        # Salva o melhor chunk encontrado
+        chunk_df = df.iloc[start_idx:start_idx + best_step]
+        final_path = base_path.parent / f"{base_path.name}_part_{partition_index}.parquet"
+        chunk_df.to_parquet(final_path, compression=compression, index=False)
+        size_mb = final_path.stat().st_size / (1024 * 1024)
+        print(f"✔️ {final_path} salvo com {size_mb:.2f} MB ({best_step} linhas)")
+
+        start_idx += best_step
         partition_index += 1
-        # Divida o DataFrame em partes com base no número de linhas
-        end_index = start_index + (chunk_size // 2)  # Inicialmente dividir em metades
-        
-        # Verificar o tamanho do arquivo Parquet
-        chunk_df = df.iloc[start_index:end_index]  # Subconjunto do DataFrame
-        
-        chunk_filename = os.path.join(output_dir, f"{base_filename}_part_{partition_index}.parquet")
-        
-        # Salvar em Parquet com a compressão desejada
-        chunk_df.to_parquet(chunk_filename, compression=compression)
-        
-        # Verificar o tamanho do arquivo gerado
-        file_size = os.path.getsize(chunk_filename) / (1024 * 1024)  # Tamanho em MB
-        print(f"Arquivo {chunk_filename} gerado com tamanho: {file_size:.2f} MB")
-        
-        # Ajustar a divisão caso o arquivo gerado seja maior que 25MB
-        if file_size > max_size_mb:
-            print(f"Tamanho maior que {max_size_mb}MB. Ajustando a partição...")
-            chunk_df = df.iloc[start_index:end_index - (chunk_size // 4)]  # Dividir ainda mais
-            chunk_df.to_parquet(chunk_filename, compression=compression)
+        pbar.update(best_step)
 
-        # Atualizar o índice para a próxima parte
-        start_index = end_index
-
-    print("Processo de partição concluído.")
-""" 
-# Carregar o arquivo CSV
-file_path = '/Users/silmara.barnabe/Downloads/mestrado/dengue/dengue_venv/data/'
-filename = 'tbEstabelecimento202503.csv'
-full_file_path = os.path.join(file_path, filename)
-
-df = pd.read_csv(full_file_path, delimiter=';', dtype=str, encoding='ISO-8859-1')
-
-# Definir o tamanho máximo dos arquivos em MB
-max_size_mb = 25  # Tamanho máximo de 25MB para cada arquivo Parquet
-
-# Tentar diferentes compressões
-compressions = ['brotli']
-for compression in compressions:
-    print(f"\nIniciando a compressão com {compression}...")
-    save_parquet_in_chunks(df, file_path, max_size_mb, compression=compression)
-"""
+    pbar.close()
+    print("✅ Todos os arquivos salvos com sucesso.")
