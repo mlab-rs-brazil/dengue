@@ -1,0 +1,838 @@
+"""
+As an open source project, we collect anonymous usage statistics to
+prioritize and find product gaps.
+This is optional and may be turned off by changing the configuration file:
+ inside ~/.ploomber/stats/config.yaml
+ Change stats_enabled to False.
+See the user stats page for more information:
+https://docs.ploomber.io/en/latest/community/user-stats.html
+
+The data we collect is limited to:
+1. The Ploomber version currently running.
+2. a generated UUID, randomized when the initial install takes place,
+    no personal or any identifiable information.
+3. Environment variables: OS architecture, Python version etc.
+4. Information about the different product phases:
+    installation, API calls and errors.
+
+    Relational schema for the telemetry.
+    event_id - Unique id for the event
+    action - Name of function called i.e. `execute_pipeline_started`
+    (see: fn telemetry_wrapper)
+    client_time - Client time
+    elapsed_time - Total time from start to end of the function call
+    pipeline_name_hash - Hash of pipeline name, if any
+    python_version - Python version
+    num_pipelines - Number of pipelines in repo, if any
+    metadata - More information i.e. pipeline success (boolean)
+    telemetry_version - Telemetry version
+
+"""
+
+from copy import copy
+from inspect import signature, _empty
+import logging
+import datetime
+import http.client as httplib
+import json
+import os
+from pathlib import Path
+import sys
+from uuid import uuid4
+from functools import wraps
+import warnings
+import random
+
+import posthog
+
+from ploomber_core.telemetry import validate_inputs
+from ploomber_core.config import Config
+from ploomber_core.telemetry.system_info import get_system_info, get_package_version
+
+TELEMETRY_VERSION = "0.5"
+DEFAULT_HOME_DIR = str(Path.home() / ".ploomber")
+DEFAULT_USER_CONF = "config.yaml"
+DEFAULT_PLOOMBER_CONF = "uid.yaml"
+CONF_DIR = "stats"
+PLOOMBER_HOME_DIR = os.getenv("PLOOMBER_HOME_DIR")
+# posthog client logs errors which are confusing for users
+# https://github.com/PostHog/posthog-python/blob/fd92502d990499a61804034e3feb7e17f64a14a1/posthog/consumer.py#L81
+logging.getLogger("posthog").disabled = True
+
+
+SYSTEM_INFO = get_system_info()
+
+
+class UserSettings(Config):
+    """User-customizable settings"""
+
+    version_check_enabled: bool = True
+
+    # important: do not get the key like this! use UserSettings().get_cloud_key()
+    cloud_key: str = None
+    user_email: str = None
+    stats_enabled: bool = True
+
+    @classmethod
+    def path(cls):
+        location = Path(get_home_dir())
+        if CONF_DIR is not None:
+            location = location / CONF_DIR
+        return location / DEFAULT_USER_CONF
+
+    def get_cloud_key(self):
+        """Get the cloud key. Returns the value in PLOOMBER_CLOUD_KEY if set,
+        otherwise returns the value in the config file
+        """
+        if "PLOOMBER_CLOUD_KEY" in os.environ:
+            return os.environ["PLOOMBER_CLOUD_KEY"]
+        else:
+            return self.cloud_key
+
+
+class Internal(Config):
+    """
+    Internal file to store settings (not intended to be modified by the
+    user)
+    """
+
+    last_version_check: datetime.datetime = None
+    last_cloud_check: datetime.datetime = None
+    uid: str
+    first_time: bool = True
+
+    @classmethod
+    def path(cls):
+        location = Path(get_home_dir())
+        if CONF_DIR is not None:
+            location = location / CONF_DIR
+        return location / DEFAULT_PLOOMBER_CONF
+
+    def uid_default(self):
+        config = self.load_config()
+        if config:
+            _uid = config.get("uid")
+            return _uid
+        else:
+            return str(uuid4())
+
+    def is_first_time(self):
+        config = self.load_config()
+        if config:
+            first_time = config.get("first_time")
+            return first_time
+        else:
+            return True
+
+
+def clean_tasks_upstream_products(input):
+    clean_input = {}
+    try:
+        product_items = input.items()
+        for product_item_name, product_item in product_items:
+            clean_input[product_item_name] = str(product_item).split("/")[-1]
+    except AttributeError:  # Single product
+        return str(input.split("/")[-1])
+
+    return clean_input
+
+
+def parse_dag(dag):
+    try:
+        dag_dict = {}
+        dag_dict["dag_size"] = str(len(dag))
+        tasks_list = list(dag)
+        if tasks_list:
+            dag_dict["tasks"] = {}
+            for task in tasks_list:
+                task_dict = {}
+                task_dict["status"] = dag[task]._exec_status.name
+                task_dict["type"] = str(type(dag[task])).split(".")[-1].split("'")[0]
+                task_dict["upstream"] = clean_tasks_upstream_products(
+                    dag[task].upstream
+                )
+                task_dict["products"] = clean_tasks_upstream_products(
+                    dag[task].product.to_json_serializable()
+                )
+                dag_dict["tasks"][task] = task_dict
+
+        return dag_dict
+    except Exception:
+        return None
+
+
+def get_home_dir():
+    """
+    Checks if ploomber home was set through the env variable.
+    returns the actual home_dir path.
+    """
+    return PLOOMBER_HOME_DIR if PLOOMBER_HOME_DIR else DEFAULT_HOME_DIR
+
+
+def check_dir_exist(input_location=None):
+    """
+    Checks if a specific directory exists, creates if not.
+    In case the user didn't set a custom dir, will turn to the default home
+    """
+    home_dir = get_home_dir()
+
+    if input_location:
+        p = Path(home_dir, input_location)
+    else:
+        p = Path(home_dir)
+
+    p = p.expanduser()
+
+    if not p.exists():
+        p.mkdir(parents=True)
+
+    return p
+
+
+def check_telemetry_enabled():
+    """
+    Check if the user allows us to use telemetry. In order of precedence:
+
+    1. If the CI (GtiHub Actions) or READTHEDOCS env var is set, return False
+    2. If PLOOMBER_STATS_ENABLED defined, check its value
+    3. Otherwise use the value in stats_enabled in the config.yaml file
+    """
+    if "CI" in os.environ or "READTHEDOCS" in os.environ:
+        return False
+
+    if "PLOOMBER_STATS_ENABLED" in os.environ:
+        return os.environ["PLOOMBER_STATS_ENABLED"].lower() == "true"
+
+    settings = UserSettings()
+    return settings.stats_enabled
+
+
+def check_first_time_usage():
+    """
+    The function checks for first time usage if the conf file exists and the
+    uid file doesn't exist.
+    """
+    first_time = internal.is_first_time()
+    if first_time:
+        internal.first_time = False
+    return first_time
+
+
+def get_latest_version(package_name, version):
+    """
+    The function checks for the latest available ploomber version
+    uid file doesn't exist.
+    """
+    conn = httplib.HTTPSConnection("pypi.org", timeout=1)
+    try:
+        conn.request("GET", f"/pypi/{package_name}/json")
+        content = conn.getresponse().read()
+        data = json.loads(content)
+        latest = data["info"]["version"]
+        return latest
+    except Exception:
+        return version
+    finally:
+        conn.close()
+
+
+def is_cloud_user():
+    """
+    The function checks if the cloud api key is set for the user.
+    Checks if the cloud_key is set in the User conf file (config.yaml).
+    returns True/False accordingly.
+    """
+    settings = UserSettings()
+    return settings.cloud_key is not None
+
+
+def email_registered():
+    """
+    The function checks if the email is set for the user.
+    Checks if the user_email is set in the User conf file (config.yaml).
+    returns True/False accordingly.
+    """
+    settings = UserSettings()
+    return settings.user_email
+
+
+def check_version(package_name, version):
+    """
+    The function checks if the user runs the latest version
+    This check will be skipped if the version_check_enabled is set to False
+    If it's not the latest, notifies the user and saves the metadata to conf
+    Alerting every 2 days on stale versions
+    """
+    settings = UserSettings()
+
+    if not settings.version_check_enabled:
+        return
+
+    # this feature is not documented. we added it to prevent the doctests
+    # from failing
+    if "PLOOMBER_VERSION_CHECK_DISABLED" in os.environ:
+        return
+
+    now = datetime.datetime.now()
+
+    # Check if we already notified in the last 2 days
+    if internal.last_version_check and (now - internal.last_version_check).days < 2:
+        return
+
+    # check latest version (this is an expensive call since it hits pypi.org)
+    # so we only ping the server when it's been 2 days
+    latest = get_latest_version(package_name, version)
+
+    # If latest version, do nothing
+    if version == latest:
+        return
+
+    # If in development mode we don't want to display the warning
+    if "dev" in version:
+        return
+
+    print(
+        f"There's a new {package_name} version available ({latest}), "
+        f"you're running {version}. To upgrade: "
+        f"pip install {package_name} --upgrade"
+    )
+
+    # Update latest check date
+    internal.last_version_check = now
+
+
+def check_cloud():
+    """Displays a message to ask the user to sign up for Ploomber Cloud"""
+    settings = UserSettings()
+
+    if not settings.version_check_enabled:
+        return
+
+    # this feature is not documented. we added it to prevent the doctests
+    # from failing
+    if "PLOOMBER_VERSION_CHECK_DISABLED" in os.environ:
+        return
+
+    now = datetime.datetime.now()
+
+    # Check if we already notified in the last 2 days
+    if internal.last_cloud_check and (now - internal.last_cloud_check).days < 1:
+        return
+
+    print_cloud_message()
+
+    # Update latest check date
+    internal.last_cloud_check = now
+
+
+def print_cloud_message():
+    choices = ["Streamlit", "Panel", "Dash", "Flask", "FastAPI", "Shiny"]
+    selected = random.choice(choices)
+
+    print(
+        f"Deploy {selected} apps for free on Ploomber Cloud! "
+        "Learn more: https://ploomber.io/s/signup"
+    )
+
+
+def _get_telemetry_info():
+    """
+    The function checks for the local config and uid files, returns the right
+    values according to the config file (True/False). In addition it checks
+    for first time installation.
+    """
+    # Check if telemetry is enabled, if not skip, else check for uid
+    telemetry_enabled = check_telemetry_enabled()
+
+    if telemetry_enabled:
+        # Check first time install
+        is_install = check_first_time_usage()
+
+        return telemetry_enabled, internal.uid, is_install
+    else:
+        return False, "", False
+
+
+def validate_entries(event_id, uid, action, client_time, total_runtime):
+    event_id = validate_inputs.str_param(str(event_id), "event_id")
+    uid = validate_inputs.str_param(uid, "uid")
+    action = validate_inputs.str_param(action, "action")
+    client_time = validate_inputs.str_param(str(client_time), "client_time")
+    elapsed_time = validate_inputs.opt_str_param(str(total_runtime), "elapsed_time")
+    return event_id, uid, action, client_time, elapsed_time
+
+
+def is_first_arg_self(sig):
+    """
+    Check the func is defined inside a class
+
+    1. If the self as its first argument, it's a method
+    2. Otherwise, it's a function
+    """
+    params = list(sig.parameters)
+    return len(params) > 0 and params[0] == "self"
+
+
+class TelemetryGroup:
+    def __init__(self, telemetry, group) -> None:
+        self._telemetry = telemetry
+        self._group = group
+
+    def log_call(self, action=None, payload=False, log_args=False, ignore_args=None):
+        return self._telemetry.log_call(
+            action=action,
+            payload=payload,
+            log_args=log_args,
+            ignore_args=ignore_args,
+            group=self._group,
+        )
+
+
+class Telemetry:
+    def __init__(self, api_key, package_name, version, *, print_cloud_message=True):
+        """
+
+        Parameters
+        ----------
+        api_key : str
+            API key for the posthog project
+
+        package_name : str
+            Name of the package calling the function
+
+        version : str
+            Version of the package calling the function
+
+        print_cloud_message : bool, default=True
+            If True, it'll print a message to ask the user to sign up for
+            Ploomber Cloud
+        """
+        if "_PLOOMBER_TELEMETRY_DEBUG" in os.environ:
+            warnings.warn(
+                "_PLOOMBER_TELEMETRY_DEBUG environment variable set, "
+                "overriding posthog key..."
+            )
+            api_key = "phc_JtG9P0pl0v0XExLqbqKfmXZjUm2wFq9cCxHE4LM74IG"
+
+        self.api_key = api_key
+        self.package_name = package_name
+        self.version = version
+        self.print_cloud_message = print_cloud_message
+
+    @classmethod
+    def from_package(cls, package_name, *, print_cloud_message=True, api_key=None):
+        """
+        Initialize a Telemetry client with the default configuration for
+        a package with the given name
+        """
+        default_api_key = api_key or "phc_P9SpSeypyPwxrMdFn2edOOEooQioF2axppyEeDwtMSP"
+        version = get_package_version(package_name)
+        return cls(
+            api_key=default_api_key,
+            package_name=package_name,
+            version=version,
+            print_cloud_message=print_cloud_message,
+        )
+
+    def log_api(self, action, client_time=None, total_runtime=None, metadata=None):
+        """
+        This function logs through an API call, assigns parameters
+        if missing like timestamp, event id and stats information.
+        """
+
+        posthog.project_api_key = self.api_key
+        metadata = metadata or {}
+
+        event_id = uuid4()
+
+        if client_time is None:
+            client_time = datetime.datetime.now()
+
+        (telemetry_enabled, uid, is_install) = _get_telemetry_info()
+
+        # Check latest version
+        check_version(self.package_name, self.version)
+
+        if self.print_cloud_message:
+            check_cloud()
+
+        # NOTE: this should not happen anymore
+        if "NO_UID" in uid:
+            metadata["uid_issue"] = uid
+            uid = None
+
+        cloud = is_cloud_user()
+        email = email_registered()
+        colab = SYSTEM_INFO["is_colab"]
+
+        if colab:
+            metadata["colab"] = colab
+
+        paperspace = SYSTEM_INFO["is_paperspace"]
+
+        if paperspace:
+            metadata["paperspace"] = paperspace
+
+        slurm = SYSTEM_INFO["is_slurm"]
+
+        if slurm:
+            metadata["slurm"] = slurm
+
+        airflow = SYSTEM_INFO["is_airflow"]
+
+        if airflow:
+            metadata["airflow"] = airflow
+
+        argo = SYSTEM_INFO["is_argo"]
+
+        if argo:
+            metadata["argo"] = argo
+
+        if "dag" in metadata:
+            metadata["dag"] = parse_dag(metadata["dag"])
+
+        os = SYSTEM_INFO["os"]
+        environment = SYSTEM_INFO["env"]
+
+        if telemetry_enabled:
+            (event_id, uid, action, client_time, elapsed_time) = validate_entries(
+                event_id, uid, action, client_time, total_runtime
+            )
+            props = {
+                "event_id": event_id,
+                "user_id": uid,
+                "action": action,
+                "client_time": str(client_time),
+                "total_runtime": total_runtime,
+                "python_version": SYSTEM_INFO["python_version"],
+                "version": self.version,
+                "package_name": self.package_name,
+                "docker_container": SYSTEM_INFO["is_docker"],
+                "cloud": cloud,
+                "email": email,
+                "os": os,
+                "environment": environment,
+                "telemetry_version": TELEMETRY_VERSION,
+                "metadata": metadata,
+            }
+
+            if is_install:
+                posthog.capture(
+                    distinct_id=uid, event="install_success_indirect", properties=props
+                )
+
+            posthog.capture(distinct_id=uid, event=action, properties=props)
+
+    # NOTE: should we log differently depending on the error type?
+    # NOTE: how should we handle chained exceptions?
+    def log_call(
+        self, action=None, payload=False, log_args=False, ignore_args=None, group=None
+    ):
+        """Log function call
+
+        Parameters
+        ----------
+        action : str, default=None
+            The action taken by the user. If None, it'll use the function's name
+
+        payload : bool, default=False
+            If True, the function will be called with `payload` as its first
+            argument (a dictionary), yoyu may add values to it and they will
+            be logged
+
+        log_args : bool, default=False
+            If True, function parameters a logger (but only
+            bool, int, float, str, tuple, and set)
+
+        ignore_args : set, default=None
+            A set of parameters to ignore, it only has effect when `log_args=True`
+
+        group : str, default=None
+            An arbitrary string to group events. You may use this to group calls
+            to methods in the same class
+
+        Examples
+        --------
+        Log function call:
+
+        >>> from ploomber_core.telemetry import Telemetry
+        >>> telemetry = Telemetry("APIKEY", "packagename", "0.1")
+        >>> @telemetry.log_call()
+        ... def add(x, y):
+        ...     return x + y
+        >>> add(x=1, y=2)
+        3
+
+        Customize action name (by default, it'll use the name of the function):
+
+        >>> from ploomber_core.telemetry import Telemetry
+        >>> telemetry = Telemetry("APIKEY", "packagename", "0.1")
+        >>> @telemetry.log_call(action="sum")
+        ... def add(x, y):
+        ...     return x + y
+        >>> add(x=1, y=2)
+        3
+
+        Log extra data:
+
+        >>> from ploomber_core.telemetry import Telemetry
+        >>> telemetry = Telemetry("APIKEY", "packagename", "0.1")
+        >>> @telemetry.log_call(payload=True)
+        ... def add(payload, x, y):
+        ...     payload["key"] = "value to log"
+        ...     return x + y
+        >>> add(x=1, y=2)
+        3
+
+        Log input arguments:
+
+        >>> from ploomber_core.telemetry import Telemetry
+        >>> telemetry = Telemetry("APIKEY", "packagename", "0.1")
+        >>> @telemetry.log_call(log_args=True)
+        ... def add(x, y):
+        ...     return x + y
+        >>> add(x=1, y=2)
+        3
+
+        Ignore some input arguments:
+
+        >>> from ploomber_core.telemetry import Telemetry
+        >>> telemetry = Telemetry("APIKEY", "packagename", "0.1")
+        >>> @telemetry.log_call(log_args=True, ignore_args={"y"})
+        ... def add(x, y):
+        ...     return x + y
+        >>> add(x=1, y=2)
+        3
+
+        Log method calls in a class (creating a group will add the class name
+        to all actions):
+
+        >>> from ploomber_core.telemetry import Telemetry
+        >>> telemetry = Telemetry("APIKEY", "packagename", "0.1")
+        >>> telemetry_my_class = telemetry.create_group("MyClass")
+        >>> class MyClass:
+        ...     @telemetry_my_class.log_call()
+        ...     def add(self, x, y):
+        ...         return x + y
+        >>> obj = MyClass()
+        >>> obj.add(x=1, y=2)
+        3
+
+
+        Unit testing (check the ``_telemetry`` attribute):
+
+        >>> from ploomber_core.telemetry import Telemetry
+        >>> telemetry = Telemetry("APIKEY", "packagename", "0.1")
+        >>> @telemetry.log_call()
+        ... def add(x, y):
+        ...     return x + y
+        >>> add._telemetry["action"]
+        'packagename-add'
+        >>> add._telemetry["payload"]
+        False
+        >>> add._telemetry["log_args"]
+        False
+        >>> add._telemetry["ignore_args"]
+        set()
+        >>> add._telemetry["group"]
+        """
+
+        if ignore_args is None:
+            ignore_args = set()
+        else:
+            ignore_args = set(ignore_args)
+
+        def _log_call(func):
+            # we'll use this on each call, so compute it once
+            func._signature = signature(func)
+
+            is_method = is_first_arg_self(func._signature)
+            # determine action name
+            action_ = self.package_name
+
+            if group:
+                action_ = f"{action_}-{group}"
+
+            name = action or getattr(func, "__name__", "funcion-without-name")
+            action_ = (f"{action_}-{name}").replace("_", "-")
+
+            func._telemetry_success = None
+            func._telemetry_error = None
+
+            # store data for unit testing decorated functions
+            func._telemetry = dict(
+                action=action_,
+                payload=payload,
+                log_args=log_args,
+                ignore_args=ignore_args,
+                group=group,
+            )
+
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                # reset attributes before calling
+                func._telemetry_success = None
+                func._telemetry_error = None
+
+                if log_args:
+                    args_parsed = _get_args(func._signature, args, kwargs, ignore_args)
+                else:
+                    args_parsed = None
+
+                _payload = dict()
+
+                metadata_started = {"argv": get_sanitized_argv()}
+
+                if log_args:
+                    metadata_started["args"] = args_parsed
+
+                start = datetime.datetime.now()
+
+                try:
+                    if payload:
+                        if is_method:
+                            injected_args = list(args)
+                            injected_args.insert(1, _payload)
+                            result = func(*injected_args, **kwargs)
+                        else:
+                            result = func(_payload, *args, **kwargs)
+                    else:
+                        result = func(*args, **kwargs)
+                except Exception as e:
+                    metadata_error = {
+                        # can we log None to posthog?
+                        "type": getattr(e, "type_", None),
+                        "exception": str(e),
+                        "argv": get_sanitized_argv(),
+                        **_payload,
+                    }
+
+                    if log_args:
+                        metadata_error["args"] = args_parsed
+
+                    error = dict(
+                        action=f"{action_}-error",
+                        total_runtime=str(datetime.datetime.now() - start),
+                        metadata=metadata_error,
+                    )
+                    func._telemetry_error = error
+                    self.log_api(**error)
+                    raise
+                else:
+                    metadata_success = {"argv": get_sanitized_argv(), **_payload}
+
+                    if log_args:
+                        metadata_success["args"] = args_parsed
+
+                    success = dict(
+                        action=f"{action_}-success",
+                        total_runtime=str(datetime.datetime.now() - start),
+                        metadata=metadata_success,
+                    )
+                    func._telemetry_success = success
+                    self.log_api(**success)
+
+                return result
+
+            return wrapper
+
+        return _log_call
+
+    def create_group(self, group):
+        return TelemetryGroup(self, group)
+
+
+def _get_args(sig, fn_args, fn_kwargs, ignore_args):
+    mapping = _map_parameters_in_fn_call_from_signature(fn_args, fn_kwargs, sig)
+
+    values_to_log = {}
+
+    for key, value in mapping.items():
+        if key not in ignore_args and _should_log_value(value):
+            values_to_log[key] = _process_value(value)
+
+    return values_to_log
+
+
+def get_sanitized_argv():
+    if not sys.argv:
+        return None
+    else:
+        try:
+            bin = Path(sys.argv[0]).name
+            return [bin] + sys.argv[1:]
+        except Exception:
+            return None
+
+
+def _should_log_value(value):
+    return isinstance(value, (bool, int, float, str, tuple, list, set))
+
+
+def _process_value(value):
+    if isinstance(value, str) and len(value) > 200:
+        return value[:200] + "...[truncated]"
+    elif isinstance(value, (tuple, set, list)):
+        value = list(value)
+
+        if len(value) > 10:
+            value = value[:10] + ["TRUNCATED"]
+
+        return value
+    else:
+        return value
+
+
+# taken from sklearn-evaluation/util.py
+def _map_parameters_in_fn_call_from_signature(args, kwargs, sig):
+    """
+    Based on function signature, parse args to to convert them to key-value
+    pairs and merge them with kwargs
+    Any parameter found in args that does not match the function signature
+    is still passed.
+    Missing parameters are filled with their default values
+    """
+    # Get missing parameters in kwargs to look for them in args
+    args_spec = list(sig.parameters)
+    params_all = set(args_spec)
+    params_missing = params_all - set(kwargs.keys())
+
+    if "self" in args_spec:
+        offset = 1
+    else:
+        offset = 0
+
+    # Get indexes for those args
+    idxs = [args_spec.index(name) for name in params_missing]
+
+    # Parse args
+    args_parsed = dict()
+
+    for idx in idxs:
+        key = args_spec[idx]
+
+        try:
+            value = args[idx - offset]
+        except IndexError:
+            pass
+        else:
+            args_parsed[key] = value
+
+    parsed = copy(kwargs)
+    parsed.update(args_parsed)
+
+    # fill default values
+    default = {k: v.default for k, v in sig.parameters.items() if v.default != _empty}
+
+    to_add = set(default.keys()) - set(parsed.keys())
+
+    default_to_add = {k: v for k, v in default.items() if k in to_add}
+    parsed.update(default_to_add)
+
+    return parsed
+
+
+try:
+    internal = Internal()
+except Exception:
+    pass

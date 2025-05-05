@@ -1,0 +1,16 @@
+Metadata-Version: 2.1
+Name: ploomber-core
+Version: 0.2.26
+Classifier: License :: OSI Approved :: Apache Software License
+License-File: LICENSE
+Requires-Dist: pyyaml
+Requires-Dist: posthog
+Requires-Dist: importlib-metadata; python_version < "3.8"
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: flake8; extra == "dev"
+Requires-Dist: twine; extra == "dev"
+Requires-Dist: invoke; extra == "dev"
+Requires-Dist: pkgmt; extra == "dev"
+Requires-Dist: pywin32; platform_system == "Windows" and extra == "dev"
+

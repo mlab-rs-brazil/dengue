@@ -1,0 +1,148 @@
+Metadata-Version: 2.4
+Name: jupysql
+Version: 0.11.1
+Summary: Better SQL in Jupyter
+Home-page: https://github.com/ploomber/jupysql
+Author: Ploomber
+Author-email: contact@ploomber.io
+Project-URL: Source, https://github.com/ploomber/jupysql
+Keywords: database ipython postgresql mysql duckdb
+Classifier: Development Status :: 3 - Alpha
+Classifier: Environment :: Console
+Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Topic :: Database
+Classifier: Topic :: Database :: Front-Ends
+Classifier: Programming Language :: Python :: 3
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: prettytable>=3.12.0
+Requires-Dist: ipython<=8.12.0; python_version <= "3.8"
+Requires-Dist: sqlalchemy
+Requires-Dist: sqlparse
+Requires-Dist: ipython-genutils>=0.1.0
+Requires-Dist: jinja2
+Requires-Dist: sqlglot>=11.3.7
+Requires-Dist: importlib-metadata; python_version < "3.8"
+Requires-Dist: jupysql-plugin>=0.4.2
+Requires-Dist: ploomber-core>=0.2.7
+Provides-Extra: dev
+Requires-Dist: flake8; extra == "dev"
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pandas<2.2.0; extra == "dev"
+Requires-Dist: polars==0.17.2; extra == "dev"
+Requires-Dist: pyarrow; extra == "dev"
+Requires-Dist: invoke; extra == "dev"
+Requires-Dist: pkgmt; extra == "dev"
+Requires-Dist: twine; extra == "dev"
+Requires-Dist: duckdb<1.1.0; extra == "dev"
+Requires-Dist: duckdb-engine; extra == "dev"
+Requires-Dist: pyodbc; extra == "dev"
+Requires-Dist: matplotlib==3.7.2; extra == "dev"
+Requires-Dist: black; extra == "dev"
+Requires-Dist: ipywidgets; extra == "dev"
+Requires-Dist: js2py; extra == "dev"
+Requires-Dist: psutil; extra == "dev"
+Requires-Dist: jupyter-server; extra == "dev"
+Provides-Extra: integration
+Requires-Dist: flake8; extra == "integration"
+Requires-Dist: pytest; extra == "integration"
+Requires-Dist: pandas<2.2.0; extra == "integration"
+Requires-Dist: polars==0.17.2; extra == "integration"
+Requires-Dist: pyarrow; extra == "integration"
+Requires-Dist: invoke; extra == "integration"
+Requires-Dist: pkgmt; extra == "integration"
+Requires-Dist: twine; extra == "integration"
+Requires-Dist: duckdb<1.1.0; extra == "integration"
+Requires-Dist: duckdb-engine; extra == "integration"
+Requires-Dist: pyodbc; extra == "integration"
+Requires-Dist: matplotlib==3.7.2; extra == "integration"
+Requires-Dist: black; extra == "integration"
+Requires-Dist: ipywidgets; extra == "integration"
+Requires-Dist: js2py; extra == "integration"
+Requires-Dist: psutil; extra == "integration"
+Requires-Dist: jupyter-server; extra == "integration"
+Requires-Dist: dockerctx; extra == "integration"
+Requires-Dist: pyarrow; extra == "integration"
+Requires-Dist: psycopg2-binary; extra == "integration"
+Requires-Dist: pymysql; extra == "integration"
+Requires-Dist: pgspecial==2.0.1; extra == "integration"
+Requires-Dist: pyodbc; extra == "integration"
+Requires-Dist: snowflake-sqlalchemy; extra == "integration"
+Requires-Dist: oracledb; extra == "integration"
+Requires-Dist: sqlalchemy-pytds; extra == "integration"
+Requires-Dist: python-tds; extra == "integration"
+Requires-Dist: redshift-connector; extra == "integration"
+Requires-Dist: sqlalchemy-redshift; extra == "integration"
+Requires-Dist: clickhouse-sqlalchemy; extra == "integration"
+Requires-Dist: pyspark; extra == "integration"
+Requires-Dist: grpcio-status; extra == "integration"
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: keywords
+Dynamic: license-file
+Dynamic: project-url
+Dynamic: provides-extra
+Dynamic: requires-dist
+Dynamic: summary
+
+# JupySQL
+![CI](https://github.com/ploomber/jupysql/workflows/CI/badge.svg)
+![CI Integration Tests](https://github.com/ploomber/jupysql/actions/workflows/ci-integration-db.yaml/badge.svg)
+![Broken Links](https://github.com/ploomber/jupysql/workflows/check-for-broken-links/badge.svg)
+[![PyPI version](https://badge.fury.io/py/jupysql.svg)](https://badge.fury.io/py/jupysql)
+[![Twitter](https://img.shields.io/twitter/follow/edublancas?label=Follow&style=social)](https://twitter.com/intent/user?screen_name=ploomber)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Downloads](https://static.pepy.tech/badge/jupysql/month)](https://pepy.tech/project/jupysql)
+
+<p align="center">
+  <a href="https://ploomber.io/community">Join our community</a>
+  |
+  <a href="https://share.hsforms.com/1E7Qa_OpcRPi_MV-segFsaAe6c2g">Newsletter</a>
+  |
+  <a href="mailto:contact@ploomber.io">Contact us</a>
+  |
+  <a href="https://jupysql.ploomber.io/">Docs</a>
+  |
+  <a href="https://ploomber.io/blog">Blog</a>
+  |
+  <a href="https://ploomber.io">Website</a>
+  |
+  <a href="https://www.youtube.com/channel/UCaIS5BMlmeNQE4-Gn0xTDXQ">YouTube</a>
+</p>
+
+> [!TIP]
+> Deploy Streamlit and Dash apps for free on [Ploomber Cloud!](https://www.platform.ploomber.io/register/?utm_medium=github&utm_source=jupysql)
+
+Run SQL in Jupyter/IPython via a `%sql` and `%%sql` magics.
+
+## Features
+
+- [Pandas integration](https://jupysql.ploomber.io/en/latest/integrations/pandas.html)
+- [SQL composition (no more hard-to-debug CTEs!)](https://jupysql.ploomber.io/en/latest/compose.html)
+- [Plot massive datasets without blowing up memory](https://jupysql.ploomber.io/en/latest/plot.html)
+- [DuckDB integration](https://jupysql.ploomber.io/en/latest/integrations/duckdb.html)
+
+## Installation
+
+```
+pip install jupysql
+```
+
+or:
+
+```
+conda install jupysql -c conda-forge
+```
+
+## Documentation
+
+[Click here to see the documentation.](https://jupysql.ploomber.io)
+
+
+## Credits
+
+This project is a fork of [ipython-sql](https://github.com/catherinedevlin/ipython-sql); the objective is to turn this project into a full-featured SQL client for Jupyter. We're looking for feedback and taking feature requests, so please [join our community](https://ploomber.io/community) and enter the #jupysql channel.
