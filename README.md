@@ -4,18 +4,14 @@ This project aims to centralize the ingestion, processing, compression, and visu
 # 🌳  Project Folder Overview
 
 ```bash
-dengue/
-├── .venv/                     # Local Python virtual environment (not versioned)
+dengue/ 
 ├── config/                    # Configuration files (e.g., parameters, paths, credentials)
-│   └── README.md              # Description of config usage and structure
 ├── dashboard/powerbi/         # Power BI dashboards and reports
-│   └── README.md              # Notes about the visualizations and how to use them
 ├── data/                      # Data storage, organized by processing layer
+│   └── staging/               # Temporary zone for data loading and testing
 │   ├── bronze/                # Raw data as collected from external sources
 │   ├── silver/                # Cleaned and transformed data
-│   ├── gold/                  # Aggregated and enriched data for analytics
-│   └── staging/               # Temporary zone for data loading and testing
-│   └── README.md              # Data pipeline documentation
+│   ├── gold/                  # Aggregated and enriched data for analytics using Star Schema model ⭐
 ├── docs/                      # Project documentation
 │   └── README.md              # General documentation and onboarding instructions
 ├── root/                      # Root-level utilities for project setup or orchestration
@@ -27,5 +23,7 @@ dengue/
 │   └── utils/                 # Utility functions and tools
 │       └── compression_for_parquet.py  # Function to split large Parquet files into chunks
 ├── tests/                     # Unit and integration tests
-│   └── README.md              # Test guidelines and coverage notes
 ```
+ 
+# ⭐ Data 
+We use a Star Schema model for the [Entity Relationship Diagram (ERD) ](https://viewer.diagrams.net/index.html?tags=%7B%7D&lightbox=1&highlight=0000ff&nav=1&dark=auto#G1fU3C-npR1xXWfkKQFC86vIHeWcr48x5z#%7B%22pageId%22%3A%221UQrTR_ZhEASL8xhWuEK%22%7D).
