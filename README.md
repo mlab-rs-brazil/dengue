@@ -26,6 +26,7 @@ The project centralizes data ingestion, processing, compression, and visualizati
 We adopt a Star Schema model for data organization, following the Entity-Relationship Diagram ([ERD](https://viewer.diagrams.net/index.html?tags=%7B%7D&lightbox=1&highlight=0000ff&nav=1&dark=auto#G1fU3C-npR1xXWfkKQFC86vIHeWcr48x5z#%7B%22pageId%22%3A%221UQrTR_ZhEASL8xhWuEK%22%7D)), ensuring efficient analytical queries and data consistency.
 
 ## 🌳 Project Folder Overview
+```
 dengue/ 
 ├── config/                    # Configuration files (parameters, paths, credentials)
 ├── dashboard/powerbi/         # Power BI dashboards and reports
@@ -45,6 +46,7 @@ dengue/
 │   └── utils/                 # Utility functions and tools
 │       └── compression_for_parquet.py  # Function to split large Parquet files into chunks
 ├── tests/                     # Unit and integration tests
+```
 
 ## 📅 Roadmap
 
