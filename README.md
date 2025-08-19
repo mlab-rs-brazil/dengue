@@ -23,9 +23,10 @@ The solution aims to enable more effective and anticipatory responses by public 
 
 The project centralizes data ingestion, processing, compression, and visualization of dengue-related data in Brazil, focusing on geographic, temporal, and operational analysis.
 
-We adopt a Star Schema model for data organization, following the Entity-Relationship Diagram ([ERD](https://viewer.diagrams.net/index.html?tags=%7B%7D&lightbox=1&highlight=0000ff&nav=1&dark=auto#G1fU3C-npR1xXWfkKQFC86vIHeWcr48x5z#%7B%22pageId%22%3A%221UQrTR_ZhEASL8xhWuEK%22%7D)), ensuring efficient analytical queries and data consistency.
+We adopt a Star Schema model for data organization, following the Entity-Relationship Diagram ([ERD](https://viewer.diagrams.net/index.html?tags=%7B%7D&lightbox=1&highlight=0000ff&nav=1&dark=auto#G1fU3C-npR1xXWfkKQFC86vIHeWcr48x5z#%7B%22pageId%22%3A%221UQrTR_ZhEASL8xhWuEK%22%7D), edit [here](https://app.diagrams.net/?splash=0#G1fU3C-npR1xXWfkKQFC86vIHeWcr48x5z#%7B%22pageId%22%3A%221UQrTR_ZhEASL8xhWuEK%22%7D)), ensuring efficient analytical queries and data consistency.
 
 ## 🌳 Project Folder Overview
+```
 dengue/ 
 ├── config/                    # Configuration files (parameters, paths, credentials)
 ├── dashboard/powerbi/         # Power BI dashboards and reports
@@ -45,6 +46,7 @@ dengue/
 │   └── utils/                 # Utility functions and tools
 │       └── compression_for_parquet.py  # Function to split large Parquet files into chunks
 ├── tests/                     # Unit and integration tests
+```
 
 ## 📅 Roadmap
 
